@@ -23,11 +23,13 @@ function App() {
   const [toolbarWidth, setToolbarWidth] = useState(500); // Default width 500px
   const [popoverVisible, setPopoverVisible] = useState(false);
   const [isPopoverOpen, setIsPopoverOpen] = useState(false); // 新增状态
+  const [isCalculating, setIsCalculating] = useState(false); // Add flag to prevent recursive calculations
   
   const toolbarRef = useRef(null);
   const buttonContainerRef = useRef(null);
   const hiddenButtonsContainerRef = useRef(null);
   const ellipsisButtonRef = useRef(null);
+  const mutationObserverRef = useRef(null);
   
   const BUTTON_MARGIN = 8; // Margin between buttons
   const ELLIPSIS_BUTTON_WIDTH = 32; // Width of the ellipsis button
@@ -35,6 +37,14 @@ function App() {
   // Function to calculate and handle button visibility using DOM manipulation
   const calculateButtonVisibility = () => {
     if (!toolbarRef.current || !buttonContainerRef.current || (isPopoverOpen && !hiddenButtonsContainerRef.current)) return;
+    
+    // Prevent recursive calculations
+    if (isCalculating) return;
+    
+    // Set calculating flag to true
+    setIsCalculating(true);
+    
+    console.log("Calculating button visibility...");
     
     const toolbarWidth = toolbarRef.current.clientWidth;
     const buttonContainer = buttonContainerRef.current;
@@ -46,11 +56,17 @@ function App() {
       hiddenButtonsContainer.removeChild(hiddenButtonsContainer.firstChild);
     }
     
+    // Get all button elements (excluding the ellipsis button)
+    const allButtons = Array.from(buttonContainer.children).filter(button => {
+      return button !== ellipsisButton?.parentNode && 
+             !button.classList.contains('non-button-element'); // Exclude any non-button elements
+    });
+    
+    console.log(`Found ${allButtons.length} buttons in container`);
+    
     // Make all buttons visible first
-    Array.from(buttonContainer.children).forEach(button => {
-      if (button !== ellipsisButton) {
-        button.style.display = 'inline-block';
-      }
+    allButtons.forEach(button => {
+      button.style.display = 'inline-block';
     });
     
     // Hide the ellipsis button initially
@@ -62,17 +78,18 @@ function App() {
     const availableWidth = toolbarWidth - 16; // Account for padding
     let currentWidth = 0;
     let hasHiddenButtons = false;
+    let visibleCount = 0;
+    let hiddenCount = 0;
     
     // Iterate through buttons to determine which ones should be visible
-    Array.from(buttonContainer.children).forEach((button, index) => {
-      if (button === ellipsisButton) return;
-      
+    allButtons.forEach((button, index) => {
       const buttonWidth = button.offsetWidth;
-      const marginRight = index < buttonContainer.children.length - 2 ? BUTTON_MARGIN : 0;
+      const marginRight = index < allButtons.length - 1 ? BUTTON_MARGIN : 0;
       
       // Check if adding this button (plus ellipsis if needed) would exceed available width
       if (currentWidth + buttonWidth + marginRight + (hasHiddenButtons ? ELLIPSIS_BUTTON_WIDTH : 0) <= availableWidth) {
         currentWidth += buttonWidth + marginRight;
+        visibleCount++;
       } else {
         // This button should be hidden
         if (!hasHiddenButtons) {
@@ -102,6 +119,7 @@ function App() {
         
         // Hide the original button
         button.style.display = 'none';
+        hiddenCount++;
       }
     });
     
@@ -109,20 +127,81 @@ function App() {
     if (!hasHiddenButtons && ellipsisButton) {
       ellipsisButton.style.display = 'none';
     }
+    
+    console.log(`Visibility calculation complete. Visible: ${visibleCount}, Hidden: ${hiddenCount}`);
+    
+    // At the end of the function, set calculating flag back to false
+    setTimeout(() => {
+      setIsCalculating(false);
+    }, 0);
   };
+
+  // Set up MutationObserver to watch for DOM changes in the button container
+  useEffect(() => {
+    if (!buttonContainerRef.current) return;
+    
+    // Create a new MutationObserver
+    const observer = new MutationObserver((mutations) => {
+      let shouldRecalculate = false;
+      
+      // Don't trigger recalculation if we're already calculating
+      if (isCalculating) return;
+      
+      mutations.forEach(mutation => {
+        // Check if nodes were added or removed
+        if (mutation.type === 'childList' && 
+            (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+          shouldRecalculate = true;
+        }
+        
+        // Check for attribute changes that might affect layout
+        if (mutation.type === 'attributes' && 
+            (mutation.attributeName === 'style' || 
+             mutation.attributeName === 'class')) {
+          shouldRecalculate = true;
+        }
+      });
+      
+      if (shouldRecalculate) {
+        console.log("DOM changes detected in button container, recalculating...");
+        // Use requestAnimationFrame to ensure DOM is updated before measuring
+        requestAnimationFrame(() => {
+          calculateButtonVisibility();
+        });
+      }
+    });
+    
+    // Configure the observer to watch for changes to the node and its descendants
+    const observerConfig = {
+      childList: true,     // Watch for changes to the direct children
+      attributes: true,    // Watch for changes to attributes
+      subtree: true,       // Watch for changes to descendants
+      characterData: true  // Watch for changes to text content
+    };
+    
+    // Start observing the button container
+    observer.observe(buttonContainerRef.current, observerConfig);
+    
+    // Store the observer in the ref
+    mutationObserverRef.current = observer;
+    
+    // Clean up the observer when the component unmounts
+    return () => {
+      if (mutationObserverRef.current) {
+        mutationObserverRef.current.disconnect();
+      }
+    };
+  }, [isCalculating]); // Add isCalculating to the dependency array
 
   // Calculate button visibility after initial render and when toolbar width changes
   useEffect(() => {
-    calculateButtonVisibility();
+    // Use setTimeout to ensure the DOM is fully rendered
+    const timer = setTimeout(() => {
+      calculateButtonVisibility();
+    }, 100);
+    
+    return () => clearTimeout(timer);
   }, [toolbarWidth]);
-
-  // Add resize listener
-  useEffect(() => {
-    window.addEventListener('resize', calculateButtonVisibility);
-    return () => {
-      window.removeEventListener('resize', calculateButtonVisibility);
-    };
-  }, []);
 
   // Handle popover visibility change
   const handlePopoverVisibleChange = (visible) => {
@@ -147,6 +226,24 @@ function App() {
       }}
     />
   );
+
+  // Simulate external button removal (for testing)
+  const removeRandomButton = () => {
+    if (!buttonContainerRef.current) return;
+    
+    const buttons = Array.from(buttonContainerRef.current.children).filter(
+      child => child !== ellipsisButtonRef.current?.parentNode
+    );
+    
+    if (buttons.length > 0) {
+      const randomIndex = Math.floor(Math.random() * buttons.length);
+      const buttonToRemove = buttons[randomIndex];
+      
+      if (buttonToRemove && buttonToRemove.parentNode) {
+        buttonToRemove.parentNode.removeChild(buttonToRemove);
+      }
+    }
+  };
 
   return (
     <div className="app">
@@ -225,6 +322,17 @@ function App() {
             <div style={{ marginTop: '8px' }}>
               Current width: {toolbarWidth}px
             </div>
+          </div>
+          
+          {/* Test button for simulating external DOM changes */}
+          <div style={{ marginTop: '20px' }}>
+            <h3>Test External DOM Changes</h3>
+            <Button 
+              onClick={removeRandomButton}
+              danger
+            >
+              Remove Random Button
+            </Button>
           </div>
         </div>
       </div>
